@@ -8,7 +8,7 @@ until they join, then roll.
 5 levels: narrower lanes, tighter angles, sliding pins, and no hints at the end.
 
 ## Play online
-https://YOUR-USERNAME.github.io/illusion-bowling/
+https://harsh2005-singh.github.io/ILLUSION-BOWLING-GAME/
 
 ## Run locally
 ```
