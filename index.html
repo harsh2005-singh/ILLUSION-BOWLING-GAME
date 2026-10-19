@@ -1,0 +1,339 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Illusion Bowling</title>
+<link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@400;600&display=swap" rel="stylesheet">
+<style>
+:root{--scene:#cfcb9f;--ink:#34331f;--panel:#f1eecf;--line:#9d9a6b;--red:#c8321e;--ok:#3c963c;color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--scene:#2b2a1c;--ink:#ece8c4;--panel:#3a3825;--line:#5f5c3c;--red:#e5533d;--ok:#6cc46c;color-scheme:dark}}
+:root[data-theme="dark"]{--scene:#2b2a1c;--ink:#ece8c4;--panel:#3a3825;--line:#5f5c3c;--red:#e5533d;--ok:#6cc46c;color-scheme:dark}
+html,body{height:100%;margin:0}
+body{background:var(--scene);color:var(--ink);font-family:'Fredoka',system-ui,-apple-system,sans-serif;overflow:hidden;position:relative}
+#hud{position:absolute;top:calc(env(safe-area-inset-top,0px) + 10px);left:12px;right:12px;display:flex;justify-content:space-between;gap:12px;pointer-events:none}
+#hud h1{margin:0;font-size:1.2rem;font-weight:600}
+#hud p{margin:2px 0 0;font-size:.85rem}
+#meterWrap{width:150px;text-align:right;font-size:.8rem}
+#meter{height:12px;border:2px solid var(--ink);border-radius:8px;overflow:hidden;margin-top:2px}
+#meter i{display:block;height:100%;width:0;background:#c8821e}
+#meter.ok i{background:var(--ok)}
+#panel{position:absolute;left:50%;transform:translateX(-50%);bottom:calc(env(safe-area-inset-bottom,0px) + 12px);width:min(600px,calc(100% - 24px));background:var(--panel);border:2px solid var(--line);border-radius:16px;padding:12px 14px;box-sizing:border-box}
+#status{margin:0 0 8px;font-size:.95rem;min-height:1.3em}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+label{flex:1 1 120px;font-size:.85rem;display:flex;flex-direction:column;gap:2px}
+input[type=range]{width:100%;accent-color:var(--red)}
+button{font:inherit;font-weight:600;border:2px solid var(--ink);background:transparent;color:var(--ink);border-radius:999px;padding:8px 16px;cursor:pointer}
+button.main{background:var(--red);border-color:var(--red);color:#fff}
+button:disabled{opacity:.4;cursor:not-allowed}
+button:focus-visible,input:focus-visible{outline:3px solid var(--red);outline-offset:2px}
+#over{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:color-mix(in srgb,var(--scene) 82%,transparent)}
+#over[hidden]{display:none}
+#box{background:var(--panel);border:2px solid var(--line);border-radius:18px;padding:22px 26px;max-width:min(420px,calc(100% - 32px));text-align:center}
+#box h2{margin:0 0 8px;font-size:1.5rem}
+#box p{margin:6px 0}
+#box button{margin-top:12px}
+</style>
+</head>
+<body>
+<div id="hud">
+  <div><h1 id="lvl"></h1><p id="goal"></p><p id="stats"></p></div>
+  <div id="meterWrap"><span id="mlabel">closeness</span><div id="meter"><i></i></div></div>
+</div>
+<section id="panel">
+  <p id="status" aria-live="polite"></p>
+  <div class="row">
+    <label>Aim<input id="aim" type="range" min="-1" max="1" step="0.05" value="0"></label>
+    <label>Spin<input id="spin" type="range" min="-1" max="1" step="0.05" value="0"></label>
+    <button id="hint">Hint</button>
+    <button id="roll" class="main">Roll</button>
+  </div>
+</section>
+<div id="over"><div id="box"><h2 id="oT"></h2><div id="oB"></div><button id="oBtn" class="main"></button></div></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+(function(){
+var R=0.3,SLOPE=3.5/5.5,COS=1/Math.sqrt(1+SLOPE*SLOPE),LANE=18,HOP=0.1;
+var LEVELS=[
+ {name:'First Light',az:45,el:30,k:8,lw:1.8,rows:3,need:5,rolls:3,tol:4,hints:99,amp:0,freq:0,meter:true},
+ {name:'Other Side',az:28,el:24,k:9,lw:1.8,rows:4,need:7,rolls:3,tol:3.5,hints:3,amp:0,freq:0,meter:true},
+ {name:'Narrow Gauge',az:62,el:36,k:7,lw:1.3,rows:4,need:8,rolls:3,tol:3,hints:2,amp:0,freq:0,meter:true},
+ {name:'Sliding Rack',az:38,el:42,k:10,lw:1.5,rows:4,need:8,rolls:3,tol:2.5,hints:1,amp:0.3,freq:1.6,meter:true},
+ {name:"Needle's Eye",az:52,el:20,k:11,lw:1.2,rows:4,need:9,rolls:3,tol:1.6,hints:0,amp:0.4,freq:2.2,meter:false}
+];
+var rad=function(d){return d*Math.PI/180};
+var dirv=function(a,e){return new THREE.Vector3(Math.cos(e)*Math.sin(a),Math.sin(e),Math.cos(e)*Math.cos(a))};
+var rightV=function(a){return new THREE.Vector3(Math.cos(a),0,-Math.sin(a))};
+var upV=function(a,e){return new THREE.Vector3(-Math.sin(e)*Math.sin(a),Math.cos(e),-Math.sin(e)*Math.cos(a))};
+
+var renderer=new THREE.WebGLRenderer({antialias:true});
+renderer.setPixelRatio(Math.min(window.devicePixelRatio||1,2));
+var cv=renderer.domElement;
+cv.style.cssText='position:absolute;inset:0;width:100%;height:100%;touch-action:none;cursor:grab';
+document.body.insertBefore(cv,document.body.firstChild);
+var scene=new THREE.Scene();
+function setBg(){scene.background=new THREE.Color(getComputedStyle(document.documentElement).getPropertyValue('--scene').trim()||'#cfcb9f')}
+setBg();if(window.matchMedia)matchMedia('(prefers-color-scheme: dark)').addEventListener('change',setBg);
+scene.add(new THREE.AmbientLight(0xffffff,0.62));
+var sun=new THREE.DirectionalLight(0xffffff,0.75);sun.position.set(3,6,4);scene.add(sun);
+var cam=new THREE.OrthographicCamera(-1,1,1,-1,0.1,300);
+
+var yellow=new THREE.MeshLambertMaterial({color:0xf2cf3a,side:THREE.DoubleSide});
+var redM=new THREE.MeshLambertMaterial({color:0xc8321e}),dotM=new THREE.MeshLambertMaterial({color:0xfff3d0});
+var pinMat=new THREE.MeshLambertMaterial({color:0xf7f5e8}),bandMat=new THREE.MeshLambertMaterial({color:0xc8321e});
+var prof=[[0,0],[.1,0],[.13,.05],[.15,.2],[.13,.4],[.08,.55],[.07,.65],[.09,.75],[.1,.82],[.08,.9],[0,.92]].map(function(p){return new THREE.Vector2(p[0],p[1])});
+var pinGeo=new THREE.LatheGeometry(prof,16);
+var bandGeo=new THREE.CylinderGeometry(0.115,0.12,0.07,16);
+
+var ball=new THREE.Group();
+ball.add(new THREE.Mesh(new THREE.SphereGeometry(R,24,18),redM));
+var dotM3=new THREE.Mesh(new THREE.SphereGeometry(0.075,10,8),dotM);dotM3.position.set(0.17,0.2,0.14).setLength(R*0.98);ball.add(dotM3);
+scene.add(ball);
+
+var world=null,endcap=null,pins=[],S2,V0,L,hz,li=0,fit=null;
+var az=0,el=0,tween=null,aim=0,spin=0;
+var mode='intro',total=0,down=0,rollsLeft=0,hints=0,tGame=0,note='',noteT=0,stars=0,gain=0;
+var B={ph:0,x:-6.6,vs:0,t:0,aim:0,spin:0,gutter:false,wait:0};
+var T=new THREE.Vector3();
+
+// ---------- geometry
+function pushFace(pos,nor,v,n,tris){
+  var nv=new THREE.Vector3(n[0],n[1],n[2]);
+  tris.forEach(function(t){
+    var a=new THREE.Vector3().fromArray(v[t[0]]),b=new THREE.Vector3().fromArray(v[t[1]]),c=new THREE.Vector3().fromArray(v[t[2]]);
+    var cr=new THREE.Vector3().subVectors(b,a).cross(new THREE.Vector3().subVectors(c,a));
+    var order=cr.dot(nv)<0?[0,2,1]:[0,1,2],vv=[a,b,c];
+    order.forEach(function(i){pos.push(vv[i].x,vv[i].y,vv[i].z);nor.push(n[0],n[1],n[2])});
+  });
+}
+function mkMesh(pos,nor){
+  var g=new THREE.BufferGeometry();
+  g.setAttribute('position',new THREE.Float32BufferAttribute(pos,3));
+  g.setAttribute('normal',new THREE.Float32BufferAttribute(nor,3));
+  return new THREE.Mesh(g,yellow);
+}
+function boxFaces(pos,nor,x0,x1,y0,y1,z0,z1){
+  var q=[[0,1,2],[0,2,3]];
+  pushFace(pos,nor,[[x0,y1,z1],[x1,y1,z1],[x1,y0,z1],[x0,y0,z1]],[0,0,1],q);
+  pushFace(pos,nor,[[x0,y1,z0],[x0,y0,z0],[x1,y0,z0],[x1,y1,z0]],[0,0,-1],q);
+  pushFace(pos,nor,[[x0,y1,z0],[x1,y1,z0],[x1,y1,z1],[x0,y1,z1]],[0,1,0],q);
+  pushFace(pos,nor,[[x0,y0,z0],[x0,y0,z1],[x1,y0,z1],[x1,y0,z0]],[0,-1,0],q);
+  pushFace(pos,nor,[[x1,y1,z0],[x1,y0,z0],[x1,y0,z1],[x1,y1,z1]],[1,0,0],q);
+  pushFace(pos,nor,[[x0,y1,z0],[x0,y1,z1],[x0,y0,z1],[x0,y0,z0]],[-1,0,0],q);
+}
+function clearWorld(){
+  if(world){scene.remove(world);world.traverse(function(o){if(o.geometry&&o.geometry!==pinGeo&&o.geometry!==bandGeo)o.geometry.dispose()})}
+  world=new THREE.Group();scene.add(world);pins=[];
+}
+function buildWorld(){
+  clearWorld();
+  var qd=[[0,1,2],[0,2,3]],pos=[],nor=[],epos=[],enor=[],allv=[];
+  var prof2=[[-7,3.5],[-1.5,0],[0,0],[0,-0.4],[-1.5,-0.4],[-7,3.1]];
+  var contour=prof2.map(function(p){return new THREE.Vector2(p[0],p[1])});
+  var tri=THREE.ShapeUtils.triangulateShape(contour,[]);
+  pushFace(pos,nor,prof2.map(function(p){return [p[0],p[1],hz]}),[0,0,1],tri);
+  pushFace(pos,nor,prof2.map(function(p){return [p[0],p[1],-hz]}),[0,0,-1],tri);
+  for(var i=0;i<6;i++){
+    var a=prof2[i],b=prof2[(i+1)%6],dx=b[0]-a[0],dy=b[1]-a[1],l=Math.hypot(dx,dy);
+    var n=[-dy/l,dx/l,0];                       // outward for this (clockwise) profile
+    var q=[[a[0],a[1],hz],[b[0],b[1],hz],[b[0],b[1],-hz],[a[0],a[1],-hz]];
+    if(i===2)pushFace(epos,enor,q,n,qd);else pushFace(pos,nor,q,n,qd);
+  }
+  boxFaces(pos,nor,-6.8,-5.8,-3.5,2.7,-hz,hz);
+  boxFaces(pos,nor,S2.x,S2.x+LANE,S2.y-0.4,S2.y,S2.z-hz,S2.z+hz);
+  boxFaces(pos,nor,S2.x+1,S2.x+2,S2.y-3.4,S2.y-0.4,S2.z-hz,S2.z+hz);
+  var body=mkMesh(pos,nor);world.add(body);
+  endcap=mkMesh(epos,enor);world.add(endcap);
+  for(var k=0;k<pos.length;k+=3)allv.push(new THREE.Vector3(pos[k],pos[k+1],pos[k+2]));
+  // pins
+  var gap=Math.min(0.5,(L.lw-0.3)/Math.max(1,L.rows-1)),hx=S2.x+14;
+  for(var r=0;r<L.rows;r++)for(var j=0;j<=r;j++){
+    var g=new THREE.Group();g.add(new THREE.Mesh(pinGeo,pinMat));
+    var band=new THREE.Mesh(bandGeo,bandMat);band.position.y=0.6;g.add(band);
+    world.add(g);
+    pins.push({g:g,x0:hx+r*0.45,z0:S2.z+(j-r/2)*gap,x:0,z:0,s:'up',vis:true,tilt:0,dx:0,dz:0,sp:0});
+  }
+  resetPins();
+  // fit camera framing
+  var a0=rad(L.az),e0=rad(L.el),r0=rightV(a0),u0=upV(a0,e0),xs=[],ys=[];
+  allv.forEach(function(v){xs.push(v.dot(r0));ys.push(v.dot(u0))});
+  var minx=Math.min.apply(null,xs),maxx=Math.max.apply(null,xs),miny=Math.min.apply(null,ys),maxy=Math.max.apply(null,ys);
+  fit={bw:maxx-minx,bh:maxy-miny+1.4};
+  T.set(0,0,0).addScaledVector(r0,(maxx+minx)/2).addScaledVector(u0,(maxy+miny)/2-fit.bh*0.08);
+  applyFrustum();
+}
+function applyFrustum(){
+  var w=window.innerWidth,h=window.innerHeight;renderer.setSize(w,h,false);
+  var asp=w/h,hw=fit?fit.bw*0.58:11,hh=fit?fit.bh*0.62:8;
+  if(hw/asp>hh)hh=hw/asp;else hw=hh*asp;
+  cam.left=-hw;cam.right=hw;cam.top=hh;cam.bottom=-hh;cam.updateProjectionMatrix();
+}
+window.addEventListener('resize',applyFrustum);
+
+function resetPins(){pins.forEach(function(p){p.s='up';p.vis=true;p.tilt=0;p.sp=0;p.x=p.x0;p.z=p.z0;p.g.visible=true;p.g.quaternion.identity();p.g.position.set(p.x,S2.y,p.z)})}
+function slopeY(x){return x<-1.5?(-1.5-x)*SLOPE+R/COS:R}
+function resetBall(){B.ph=0;B.x=-6.6;B.vs=0;B.t=0;B.gutter=false;B.wait=0;ball.visible=true;ball.rotation.set(0,0,0)}
+
+function load(i){
+  li=i;L=LEVELS[i];hz=L.lw/2;
+  V0=dirv(rad(L.az),rad(L.el));S2=V0.clone().multiplyScalar(-L.k);
+  buildWorld();
+  var sg=i%2===0?1:-1;
+  az=rad(L.az)-0.7*sg;el=Math.max(0.12,rad(L.el)-0.3*sg);
+  tween=null;aim=0;spin=0;document.getElementById('aim').value=0;document.getElementById('spin').value=0;
+  hints=L.hints;rollsLeft=L.rolls;down=0;note='';noteT=0;
+  resetBall();mode='intro';showOverlay();
+}
+function angErr(){return Math.acos(Math.min(1,dirv(az,el).dot(V0)))}
+
+// ---------- game flow
+function worldAim(){return -aim*(hz-0.2)}
+function worldSpin(){return -spin*L.lw*0.45}
+function doRoll(){
+  if(mode!=='play'||angErr()>=rad(L.tol))return;
+  B.aim=worldAim();B.spin=worldSpin();B.ph=1;mode='rolling';
+}
+function doHint(){if((mode==='play'||mode==='rolling')&&hints>0){hints--;startTween()}}
+function startTween(){tween={t:0,a:az,e:el}}
+function knock(p,fx,fz,sp){if(p.s!=='up')return;var l=Math.hypot(fx,fz)||1;p.s='fall';p.dx=fx/l;p.dz=fz/l;p.sp=sp}
+function finishRoll(){
+  var fell=pins.filter(function(p){return p.vis&&p.s!=='up'});
+  fell.forEach(function(p){p.vis=false;p.g.visible=false});
+  var n=fell.length;down+=n;rollsLeft--;
+  if(down>=L.need||down>=pins.length){
+    stars=rollsLeft>=L.rolls-1?3:(rollsLeft>=1?2:1);gain=down*10+rollsLeft*25+stars*20;total+=gain;mode='win';showOverlay();
+  }else if(rollsLeft<=0){mode='lose';showOverlay()}
+  else{note=n?n+' down':'Missed!';noteT=2.4;mode='play'}
+  resetBall();
+}
+function advance(){
+  if(mode==='intro')mode='play';
+  else if(mode==='win'){if(li+1<LEVELS.length){load(li+1);return}mode='done'}
+  else if(mode==='lose'){load(li);return}
+  else if(mode==='done'){total=0;load(0);return}
+  showOverlay();
+}
+function showOverlay(){
+  var o=document.getElementById('over');
+  if(mode==='play'||mode==='rolling'){o.hidden=true;return}
+  o.hidden=false;
+  var t=document.getElementById('oT'),b=document.getElementById('oB'),btn=document.getElementById('oBtn');
+  if(mode==='intro'){t.textContent='Level '+(li+1)+': '+L.name;
+    b.innerHTML='<p>Knock down '+L.need+' of '+pins.length+' pins using '+L.rolls+' rolls.</p><p>Drag the scene until the ramp and the lane join into one track, then roll.</p>';btn.textContent='Start'}
+  else if(mode==='win'){t.textContent='Level complete';
+    b.innerHTML='<p>'+'★'.repeat(stars)+'☆'.repeat(3-stars)+'&nbsp; +'+gain+' points</p><p>Total score '+total+'</p>';btn.textContent=li+1<LEVELS.length?'Next level':'Finish'}
+  else if(mode==='lose'){t.textContent='Out of rolls';
+    b.innerHTML='<p>You knocked down '+down+' of the '+L.need+' you needed.</p>';btn.textContent='Try again'}
+  else{t.textContent='You beat all 5 levels';b.innerHTML='<p>Final score: '+total+'</p>';btn.textContent='Play again'}
+  btn.focus();
+}
+
+// ---------- input
+var drag=null;
+cv.addEventListener('pointerdown',function(e){if(mode==='intro')return;drag={x:e.clientX,y:e.clientY};tween=null;cv.setPointerCapture(e.pointerId);cv.style.cursor='grabbing'});
+cv.addEventListener('pointermove',function(e){
+  if(!drag)return;
+  az-=(e.clientX-drag.x)*0.006;el=Math.min(1.3,Math.max(0.05,el+(e.clientY-drag.y)*0.006));drag.x=e.clientX;drag.y=e.clientY;
+});
+function endDrag(){if(!drag)return;drag=null;cv.style.cursor='grab';if(angErr()<0.12)startTween()}
+cv.addEventListener('pointerup',endDrag);cv.addEventListener('pointercancel',endDrag);
+var held={};
+window.addEventListener('keydown',function(e){
+  var k=e.key.toLowerCase();
+  if(k===' '){e.preventDefault();if(mode==='play')doRoll();else if(mode!=='rolling')advance();return}
+  if(k==='enter'&&mode!=='play'&&mode!=='rolling'){advance();return}
+  if(k==='h')doHint();
+  if(k==='r'&&(mode==='play'||mode==='rolling')){load(li);mode='play';showOverlay()}
+  if(k.indexOf('arrow')===0)e.preventDefault();
+  held[k]=true;
+});
+window.addEventListener('keyup',function(e){
+  var k=e.key.toLowerCase();held[k]=false;
+  if(k.indexOf('arrow')===0&&angErr()<0.12)startTween();
+});
+var aimEl=document.getElementById('aim'),spinEl=document.getElementById('spin');
+aimEl.addEventListener('input',function(){aim=parseFloat(aimEl.value)});
+spinEl.addEventListener('input',function(){spin=parseFloat(spinEl.value)});
+document.getElementById('roll').addEventListener('click',doRoll);
+document.getElementById('hint').addEventListener('click',doHint);
+document.getElementById('oBtn').addEventListener('click',advance);
+
+// ---------- loop
+var $=function(id){return document.getElementById(id)};
+function setText(id,s){var e=$(id);if(e.textContent!==s)e.textContent=s}
+function update(dt){
+  tGame+=dt;
+  if(mode==='play'||mode==='rolling'){
+    var cr=(held.arrowleft?1:0)-(held.arrowright?1:0),cu=(held.arrowdown?1:0)-(held.arrowup?1:0);
+    if(cr||cu)tween=null;
+    az+=cr*1.2*dt;el=Math.min(1.3,Math.max(0.05,el+cu*1.2*dt));
+    if(mode==='play'){
+      var da=((held.d?1:0)-(held.a?1:0))*1.3*dt,ds=((held.x?1:0)-(held.z?1:0))*1.3*dt;
+      if(da){aim=Math.max(-1,Math.min(1,aim+da));aimEl.value=aim}
+      if(ds){spin=Math.max(-1,Math.min(1,spin+ds));spinEl.value=spin}
+    }
+  }
+  if(tween){tween.t+=dt/0.35;var k=Math.min(1,tween.t),s=k*k*(3-2*k);az=tween.a+(rad(L.az)-tween.a)*s;el=tween.e+(rad(L.el)-tween.e)*s;if(k>=1)tween=null}
+  var v=dirv(az,el);cam.position.copy(T).addScaledVector(v,80);cam.lookAt(T);
+  var err=angErr(),aligned=err<rad(L.tol);
+  endcap.visible=err>0.03;
+  if(noteT>0)noteT-=dt;
+
+  if(B.ph===0){ball.position.set(B.x,slopeY(B.x),worldAim())}
+  else if(B.ph===1){
+    B.vs+=7*dt;B.x+=B.vs*COS*dt;ball.rotation.z-=B.vs*dt/R;
+    if(B.x>=0){B.x=0;B.ph=2;B.t=0}
+    ball.position.set(B.x,slopeY(B.x),B.aim);
+  }else if(B.ph===2){
+    B.t+=dt;var u=Math.min(1,B.t/HOP);
+    ball.position.set(S2.x*u,R+S2.y*u,B.aim+S2.z*u);
+    if(u>=1){B.ph=3;B.x=S2.x}
+  }else if(B.ph===3){
+    B.x+=B.vs*dt;ball.rotation.z-=B.vs*dt/R;
+    var d=(B.x-S2.x)/14,zo=B.aim+B.spin*d*d;
+    if(Math.abs(zo)>hz+0.05)B.gutter=true;
+    ball.position.set(B.x,S2.y+R-(B.gutter?0.3:0),S2.z+zo);
+    if(!B.gutter)pins.forEach(function(p){
+      if(p.s!=='up')return;
+      var ex=p.x-ball.position.x,ez=p.z-ball.position.z;
+      if(ex*ex+ez*ez<0.2){knock(p,ex+0.5,ez*1.5,3+B.vs*0.3+Math.random());B.vs*=0.985}
+    });
+    if(B.x>S2.x+LANE-0.4){B.ph=4;B.wait=1.3;ball.visible=false}
+  }else if(B.ph===4){B.wait-=dt;if(B.wait<=0){B.ph=5;finishRoll()}}
+
+  var shift=L.amp?L.amp*Math.sin(L.freq*tGame):0;
+  pins.forEach(function(p){
+    if(p.s==='up'){p.z=p.z0+shift;p.g.position.set(p.x,S2.y,p.z);return}
+    p.tilt=Math.min(Math.PI/2,p.tilt+dt*3.6);
+    p.x+=p.dx*p.sp*dt;p.z+=p.dz*p.sp*dt;p.sp*=Math.exp(-1.6*dt);
+    p.g.position.set(p.x,S2.y+Math.sin(p.tilt)*0.15,p.z);
+    p.g.quaternion.setFromAxisAngle(new THREE.Vector3(p.dz,0,-p.dx),p.tilt);
+    if(p.sp>1.2)pins.forEach(function(q){
+      if(q.s!=='up')return;
+      var ex=q.x-p.x,ez=q.z-p.z;if(ex*ex+ez*ez<0.11)knock(q,ex,ez,p.sp*0.7);
+    });
+  });
+
+  // HUD
+  setText('lvl','Level '+(li+1)+': '+L.name);
+  setText('goal','Knock down '+L.need+' of '+pins.length+' pins in '+L.rolls+' rolls');
+  setText('stats','Pins down '+down+'   Rolls left '+rollsLeft+'   Hints '+(L.hints===99?'unlimited':hints)+'   Score '+total);
+  $('meterWrap').style.visibility=L.meter&&(mode==='play'||mode==='rolling')?'visible':'hidden';
+  var m=$('meter');m.className=aligned?'ok':'';m.firstChild.style.width=Math.max(0,1-err*180/Math.PI/40)*100+'%';
+  var st;
+  if(mode==='rolling')st=noteT>0?note:'Rolling. Drag to look from another side and spot the hop.';
+  else if(mode==='play')st=(noteT>0?note+'. ':'')+(aligned?'Track joined. Set aim and spin, then roll.':'Drag the scene until the ramp and the lane join into one track.');
+  else st='';
+  setText('status',st);
+  $('roll').disabled=!(mode==='play'&&aligned);
+  $('hint').disabled=!((mode==='play'||mode==='rolling')&&hints>0);
+  $('panel').style.visibility=(mode==='play'||mode==='rolling')?'visible':'hidden';
+}
+load(0);
+var last=performance.now();
+function loop(now){var dt=Math.min(0.033,(now-last)/1000);last=now;update(dt);renderer.render(scene,cam);requestAnimationFrame(loop)}
+requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
